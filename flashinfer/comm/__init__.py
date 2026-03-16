@@ -65,4 +65,12 @@ from .trtllm_moe_alltoall import (
     moe_a2a_wrap_payload_tensor_in_workspace as moe_a2a_wrap_payload_tensor_in_workspace,
 )
 
+# Helix A2A (DCP Attention Reduction)
+from .helix_alltoall import helix_a2a_alltoall as helix_a2a_alltoall
+from .helix_alltoall import (
+    helix_a2a_allocate_workspace as helix_a2a_allocate_workspace,
+)
+from .helix_alltoall import helix_a2a_init_workspace as helix_a2a_init_workspace
+from .helix_alltoall import helix_a2a_workspace_size as helix_a2a_workspace_size
+
 # from .mnnvl import MnnvlMemory, MnnvlMoe, MoEAlltoallInfo
