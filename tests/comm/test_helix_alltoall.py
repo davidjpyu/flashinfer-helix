@@ -61,6 +61,13 @@ def setup_test_environment():
 # ─── Helper ──────────────────────────────────────────────────────────────
 
 
+def _to_torch(t):
+    """Convert a tvm_ffi.core.Tensor (or any DLPack object) to torch.Tensor."""
+    if isinstance(t, torch.Tensor):
+        return t
+    return torch.from_dlpack(t)
+
+
 def _run_single_gpu_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype):
     """Simulate cp_size ranks on one GPU and return (inputs, outputs, workspace).
 
@@ -104,8 +111,8 @@ def _run_single_gpu_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype):
                 r,
                 cp_size,
             )
-            recv_o[r] = o
-            recv_s[r] = s
+            recv_o[r] = _to_torch(o)
+            recv_s[r] = _to_torch(s)
 
     for stream in streams:
         stream.synchronize()
@@ -244,8 +251,8 @@ def test_repeated_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype, num_
         for r in range(cp_size):
             with torch.cuda.stream(streams[r]):
                 o, s = helix_a2a_alltoall(all_po[r], all_ss[r], workspace, r, cp_size)
-                recv_o[r] = o
-                recv_s[r] = s
+                recv_o[r] = _to_torch(o)
+                recv_s[r] = _to_torch(s)
 
         for stream in streams:
             stream.synchronize()
