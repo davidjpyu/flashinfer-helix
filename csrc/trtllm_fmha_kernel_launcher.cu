@@ -289,6 +289,13 @@ void trtllm_paged_attention_decode(
         << "attention_sinks must be a float tensor";
     attention_sinks_ptr = static_cast<float*>(attention_sinks.value().data_ptr());
   }
+
+  float* lse_ptr = nullptr;
+  if (lse.has_value()) {
+    TVM_FFI_ICHECK_EQ(lse.value().dtype(), dl_float32) << "lse must be a float tensor";
+    lse_ptr = static_cast<float*>(lse.value().data_ptr());
+  }
+
   auto maybe_bmm1_scale_value = bmm1_scale.as<double>();
   auto maybe_bmm2_scale_value = bmm2_scale.as<double>();
   auto maybe_bmm1_scale_log2_tensor = bmm1_scale.as<ffi::Tensor>();
@@ -377,12 +384,6 @@ void trtllm_paged_attention_context(
     TVM_FFI_ICHECK_EQ(attention_sinks.value().dtype(), dl_float32)
         << "attention_sinks must be a float tensor";
     attention_sinks_ptr = static_cast<float*>(attention_sinks.value().data_ptr());
-  }
-
-  float* lse_ptr = nullptr;
-  if (lse.has_value()) {
-    TVM_FFI_ICHECK_EQ(lse.value().dtype(), dl_float32) << "lse must be a float tensor";
-    lse_ptr = static_cast<float*>(lse.value().data_ptr());
   }
 
   auto maybe_bmm1_scale_value = bmm1_scale.as<double>();
