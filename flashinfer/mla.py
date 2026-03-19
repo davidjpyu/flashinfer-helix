@@ -603,7 +603,9 @@ def trtllm_batch_decode_with_kv_cache_mla(
     skip_softmax_threshold_scale_factor: Optional[float] = None,
     enable_pdl: bool | None = None,
     backend: str = "auto",
-) -> torch.Tensor:
+    return_lse: bool = False,
+    lse: Optional[torch.Tensor] = None,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Parameters
     ----------
@@ -679,6 +681,8 @@ def trtllm_batch_decode_with_kv_cache_mla(
             )
         if skip_softmax_threshold_scale_factor is not None:
             raise ValueError("skip_softmax is not supported for XQA backend")
+        if return_lse:
+            raise ValueError("XQA MLA backend does not support return_lse")
         return xqa_batch_decode_with_kv_cache_mla(
             query,
             kv_cache,
@@ -740,6 +744,12 @@ def trtllm_batch_decode_with_kv_cache_mla(
         max_q_len = query.size(1)
         query = query.flatten(0, 1)  # [B*S, H, D]
 
+        if return_lse and lse is None:
+            num_qo_heads = query.shape[1]
+            lse = torch.empty(
+                query.shape[0], num_qo_heads, device=query.device, dtype=torch.float32
+            )
+
         run_func(
             out,
             None,  # fp4 output not supported in wrapper api yet.
@@ -765,8 +775,11 @@ def trtllm_batch_decode_with_kv_cache_mla(
             sinks,
             None,  # cum_seq_lens_q
             skip_softmax_threshold_scale_factor,
+            lse if return_lse else None,
         )
 
+        if return_lse:
+            return out, lse
         return out
     else:
         raise ValueError(f"Backend {backend} not supported")
