@@ -18,9 +18,9 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 
-#include "helix_common.h"
+#include "tensorrt_llm/kernels/moeCommKernelsCommon.h"
 
-namespace helix_a2a {
+namespace tensorrt_llm {
 namespace kernels {
 
 // ============================================================================
@@ -28,10 +28,12 @@ namespace kernels {
 // ============================================================================
 
 static __device__ __forceinline__ uint32_t __as_ptr_smem(void const* __ptr) {
+  // Consider adding debug asserts here.
   return static_cast<uint32_t>(__cvta_generic_to_shared(__ptr));
 }
 
 static __device__ __forceinline__ uint64_t __as_ptr_gmem(void const* __ptr) {
+  // Consider adding debug asserts here.
   return static_cast<uint64_t>(__cvta_generic_to_global(__ptr));
 }
 
@@ -140,8 +142,7 @@ __device__ __forceinline__ void cp_async_wait_group() {
 __device__ __forceinline__ void cp_async_bulk_g2s(void* dstMem, void const* srcMem, int copySize,
                                                   uint64_t* smemBar) {
 #if defined(__CUDACC__) && __CUDA_ARCH__ >= 900
-  asm("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [%0], "
-      "[%1], %2, [%3];"
+  asm("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
       :
       : "r"(__as_ptr_smem(dstMem)), "l"(__as_ptr_gmem(srcMem)), "r"(copySize),
         "r"(__as_ptr_smem(smemBar))
@@ -196,4 +197,4 @@ __device__ __forceinline__ void smemBarWait(uint64_t* smemBar, uint32_t* phasePa
 }
 
 }  // namespace kernels
-}  // namespace helix_a2a
+}  // namespace tensorrt_llm
