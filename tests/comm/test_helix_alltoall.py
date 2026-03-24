@@ -195,6 +195,12 @@ CORRECTNESS_PARAMS = [
     pytest.param(4, 16, 256, 4, torch.bfloat16, id="cp4-B16-D256-S4-bf16"),
     pytest.param(4, 16, 128, 2, torch.float16, id="cp4-B16-D128-S2-fp16"),
     pytest.param(4, 16, 256, 2, torch.float16, id="cp4-B16-D256-S2-fp16"),
+    # cp_size=8 (full single-node, e.g. 8xH200)
+    pytest.param(8, 1, 128, 2, torch.bfloat16, id="cp8-B1-D128-S2-bf16"),
+    pytest.param(8, 16, 128, 2, torch.bfloat16, id="cp8-B16-D128-S2-bf16"),
+    pytest.param(8, 64, 128, 2, torch.bfloat16, id="cp8-B64-D128-S2-bf16"),
+    pytest.param(8, 16, 256, 4, torch.bfloat16, id="cp8-B16-D256-S4-bf16"),
+    pytest.param(8, 16, 128, 2, torch.float16, id="cp8-B16-D128-S2-fp16"),
 ]
 
 
@@ -259,6 +265,135 @@ def test_repeated_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype, num_
         torch.cuda.synchronize()
 
         _verify_transpose(cp_size, all_po, all_ss, recv_o, recv_s)
+
+
+# ─── Edge Cases ──────────────────────────────────────────────────────────
+
+
+class TestEdgeCases:
+    """Edge cases: cp_size=1, batch_size=0."""
+
+    def test_cp_size_1_is_identity(self):
+        """cp_size=1: output should equal input (no peers to exchange with)."""
+        cp_size, batch_size, head_dim, stats_dim = 1, 16, 128, 2
+        dtype = torch.bfloat16
+        torch.cuda.set_device(0)
+
+        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        po = torch.randn(batch_size, cp_size, head_dim, dtype=dtype, device="cuda")
+        ss = torch.randn(
+            batch_size, cp_size, stats_dim, dtype=torch.float32, device="cuda"
+        )
+
+        helix_a2a_init_workspace(workspace, 0, cp_size)
+        torch.cuda.synchronize()
+
+        o, s = helix_a2a_alltoall(po, ss, workspace, 0, cp_size)
+        o = _to_torch(o)
+        s = _to_torch(s)
+
+        torch.testing.assert_close(o, po, atol=0, rtol=0)
+        torch.testing.assert_close(s, ss, atol=0, rtol=0)
+
+    def test_batch_size_0(self):
+        """batch_size=0: should not crash (zero entries → no work)."""
+        cp_size, batch_size, head_dim, stats_dim = 2, 0, 128, 2
+        dtype = torch.bfloat16
+        torch.cuda.set_device(0)
+
+        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        po = torch.randn(batch_size, cp_size, head_dim, dtype=dtype, device="cuda")
+        ss = torch.randn(
+            batch_size, cp_size, stats_dim, dtype=torch.float32, device="cuda"
+        )
+
+        for r in range(cp_size):
+            helix_a2a_init_workspace(workspace, r, cp_size)
+        torch.cuda.synchronize()
+
+        # Should not crash; output shape should match input shape
+        o, s = helix_a2a_alltoall(po, ss, workspace, 0, cp_size)
+        o = _to_torch(o)
+        s = _to_torch(s)
+        assert o.shape == po.shape
+        assert s.shape == ss.shape
+
+
+# ─── Input Validation (Error Handling) ───────────────────────────────────
+
+
+class TestInputValidation:
+    """Verify that invalid inputs are rejected with errors, not silent corruption."""
+
+    def test_wrong_dtype_float64(self):
+        """partial_o with float64 should be rejected."""
+        cp_size = 2
+        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        for r in range(cp_size):
+            helix_a2a_init_workspace(workspace, r, cp_size)
+        torch.cuda.synchronize()
+
+        po = torch.randn(16, cp_size, 128, dtype=torch.float64, device="cuda")
+        ss = torch.randn(16, cp_size, 2, dtype=torch.float32, device="cuda")
+
+        with pytest.raises(RuntimeError):
+            helix_a2a_alltoall(po, ss, workspace, 0, cp_size)
+
+    def test_wrong_dtype_float32(self):
+        """partial_o with float32 should be rejected (must be half/bfloat16)."""
+        cp_size = 2
+        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        for r in range(cp_size):
+            helix_a2a_init_workspace(workspace, r, cp_size)
+        torch.cuda.synchronize()
+
+        po = torch.randn(16, cp_size, 128, dtype=torch.float32, device="cuda")
+        ss = torch.randn(16, cp_size, 2, dtype=torch.float32, device="cuda")
+
+        with pytest.raises(RuntimeError):
+            helix_a2a_alltoall(po, ss, workspace, 0, cp_size)
+
+    def test_stats_dim_1_odd_alignment(self):
+        """stats_dim=1 violates 'even and >= 2' constraint — should error."""
+        cp_size = 2
+        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        for r in range(cp_size):
+            helix_a2a_init_workspace(workspace, r, cp_size)
+        torch.cuda.synchronize()
+
+        po = torch.randn(16, cp_size, 128, dtype=torch.bfloat16, device="cuda")
+        ss = torch.randn(16, cp_size, 1, dtype=torch.float32, device="cuda")
+
+        with pytest.raises(RuntimeError):
+            helix_a2a_alltoall(po, ss, workspace, 0, cp_size)
+
+    def test_mismatched_batch_dims(self):
+        """partial_o and softmax_stats with different batch sizes should error."""
+        cp_size = 2
+        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        for r in range(cp_size):
+            helix_a2a_init_workspace(workspace, r, cp_size)
+        torch.cuda.synchronize()
+
+        po = torch.randn(16, cp_size, 128, dtype=torch.bfloat16, device="cuda")
+        ss = torch.randn(32, cp_size, 2, dtype=torch.float32, device="cuda")
+
+        with pytest.raises(RuntimeError):
+            helix_a2a_alltoall(po, ss, workspace, 0, cp_size)
+
+    def test_wrong_stats_dtype(self):
+        """softmax_stats with half instead of float32 should error."""
+        cp_size = 2
+        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        for r in range(cp_size):
+            helix_a2a_init_workspace(workspace, r, cp_size)
+        torch.cuda.synchronize()
+
+        po = torch.randn(16, cp_size, 128, dtype=torch.bfloat16, device="cuda")
+        ss = torch.randn(16, cp_size, 2, dtype=torch.float16, device="cuda")
+
+        with pytest.raises(RuntimeError):
+            helix_a2a_alltoall(po, ss, workspace, 0, cp_size)
 
 
 if __name__ == "__main__":
