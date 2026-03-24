@@ -115,6 +115,27 @@ def gen_helix_alltoall_module() -> JitSpec:
     )
     return gen_jit_spec(
         "helix_alltoall",
-        [jit_env.FLASHINFER_CSRC_DIR / "helix_alltoall.cu"],
+        [
+            jit_env.FLASHINFER_CSRC_DIR / "trtllm_helix_alltoall.cu",
+            jit_env.FLASHINFER_CSRC_DIR
+            / "nv_internal"
+            / "tensorrt_llm"
+            / "kernels"
+            / "helixAllToAll.cu",
+            jit_env.FLASHINFER_CSRC_DIR
+            / "nv_internal"
+            / "cpp"
+            / "common"
+            / "envUtils.cpp",
+            jit_env.FLASHINFER_CSRC_DIR
+            / "nv_internal"
+            / "cpp"
+            / "common"
+            / "tllmException.cpp",
+        ],
+        extra_include_paths=[
+            str(jit_env.FLASHINFER_CSRC_DIR / "nv_internal"),
+            str(jit_env.FLASHINFER_CSRC_DIR / "nv_internal" / "include"),
+        ],
         extra_cuda_cflags=nvcc_flags,
     )

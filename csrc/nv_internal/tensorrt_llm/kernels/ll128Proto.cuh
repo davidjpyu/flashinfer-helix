@@ -18,9 +18,9 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 
-#include "helix_common.h"
+#include "tensorrt_llm/kernels/moeCommKernelsCommon.h"
 
-namespace helix_a2a {
+namespace tensorrt_llm {
 namespace kernels {
 
 class LL128Proto {
@@ -32,6 +32,9 @@ class LL128Proto {
                                                                uint64_t step, int countIn128Bytes,
                                                                int fifoEntry128ByteIndexBase,
                                                                int loaded128ByteCount, int laneId) {
+    // return value should be how many package already been received.
+    // 0 means no data received, -1 means has received finish package(should be the very first 128
+    // Byte).
     uint64_t* aligned128BytesShm = reinterpret_cast<uint64_t*>(sharedMemoryBase);
     int totalValidCount = 0;
     for (int idxBase = loaded128ByteCount; idxBase < countIn128Bytes; idxBase += WARP_SIZE) {
@@ -51,9 +54,11 @@ class LL128Proto {
       }
       __syncwarp();
       unsigned validMask = __ballot_sync(WARP_MASK, valid);
+      // here we check valid in order, if previous valid is not true, we ignore the current valid.
       int validCount = (validMask == WARP_MASK) ? WARP_SIZE : (__ffs(~validMask) - 1);
       if (USE_FINISH) {
         unsigned finishedMask = __ballot_sync(WARP_MASK, finish);
+        // finish should be the very first 128 Byte.
         if (finishedMask & 0x1) {
           return -1;
         }
@@ -74,6 +79,8 @@ class LL128Proto {
     int halfLaneId = laneId % 16;
     int halfIndex = laneId / 16;
     int tailOffsetIn128Bytes = countIn128Bytes + halfIndex;
+    // for LL128 15 * 128 Bytes will be packed to 16 * 128 Bytes, each 16 threads is used for one 15
+    // * 128 bytes.
     for (int idxIn128BytesBase = halfIndex * 15; idxIn128BytesBase < countIn128Bytes;
          idxIn128BytesBase += 30) {
       int tailFlagIndexFromFifoEntry = fifoEntry128ByteIndexBase + tailOffsetIn128Bytes;
@@ -130,14 +137,17 @@ class LL128Proto {
 
   static __device__ __forceinline__ void rearm(uint32_t* u32FifoPtr, uint64_t step,
                                                int countIn128Bytes, int fifoEntry128ByteIndexBase,
-                                               int laneId) {}
+                                               int laneId) {
+    // LL128 don't need rearm
+  }
 
   static __device__ __host__ __forceinline__ int computeProtoTransfer128ByteAlignedSize(
       int compact128ByteSizeBeforeProto) {
+    // each 15 * 128 byte need one tail 128 byte
     int tail128ByteSize = (compact128ByteSizeBeforeProto + 15 * 128 - 1) / (15 * 128) * 128;
     return compact128ByteSizeBeforeProto + tail128ByteSize;
   }
 };
 
 }  // namespace kernels
-}  // namespace helix_a2a
+}  // namespace tensorrt_llm
