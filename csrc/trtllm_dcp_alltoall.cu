@@ -33,18 +33,18 @@ namespace {
 static int getEnvChannelCount() {
   static int cached = -1;
   if (cached < 0) {
-    const char* env = std::getenv("HELIX_A2A_CHANNEL_COUNT");
+    const char* env = std::getenv("DCP_A2A_CHANNEL_COUNT");
     cached = (env && std::string(env) != "0") ? std::atoi(env) : 0;
   }
   return cached;
 }
 
-int64_t getHelixWorkspaceSizePerRank(int64_t cp_size) {
+int64_t getDcpWorkspaceSizePerRank(int64_t cp_size) {
   return static_cast<int64_t>(
       tensorrt_llm::kernels::computeHelixWorkspaceSizePerRank(static_cast<int>(cp_size)));
 }
 
-void initializeHelixWorkspaceOp(TensorView workspace, int64_t cp_rank, int64_t cp_size) {
+void initializeDcpWorkspaceOp(TensorView workspace, int64_t cp_rank, int64_t cp_size) {
   CHECK_INPUT_TYPE(workspace, dl_int64);
   TVM_FFI_ICHECK_EQ(workspace.ndim(), 2) << "workspace must be 2D";
   TVM_FFI_ICHECK_EQ(workspace.size(0), cp_size) << "workspace first dim must equal cp_size";
@@ -57,7 +57,7 @@ void initializeHelixWorkspaceOp(TensorView workspace, int64_t cp_rank, int64_t c
   tensorrt_llm::kernels::initializeHelixWorkspace(local_ptr, static_cast<int>(cp_size), stream);
 }
 
-tvm::ffi::Tuple<Tensor, Tensor> alltoallHelixNativeOp(TensorView partial_o,
+tvm::ffi::Tuple<Tensor, Tensor> alltoallDcpNativeOp(TensorView partial_o,
                                                       TensorView softmax_stats,
                                                       TensorView workspace, int64_t cp_rank,
                                                       int64_t cp_size) {
@@ -161,6 +161,6 @@ tvm::ffi::Tuple<Tensor, Tensor> alltoallHelixNativeOp(TensorView partial_o,
 
 }  // namespace
 
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(get_helix_workspace_size_per_rank, getHelixWorkspaceSizePerRank);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(initialize_helix_workspace, initializeHelixWorkspaceOp);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(alltoall_helix_native, alltoallHelixNativeOp);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(get_dcp_workspace_size_per_rank, getDcpWorkspaceSizePerRank);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(initialize_dcp_workspace, initializeDcpWorkspaceOp);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(alltoall_dcp_native, alltoallDcpNativeOp);

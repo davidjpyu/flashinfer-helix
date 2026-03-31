@@ -12,23 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for flashinfer.comm.helix_alltoall — Helix LL128 FIFO All-to-All.
+"""Tests for flashinfer.comm.dcp_alltoall — DCP LL128 FIFO All-to-All.
 
 Single-GPU multi-rank pattern: simulates cp_size ranks on one GPU using
 separate CUDA streams for the alltoall phase. All ranks share a single
 workspace tensor of shape [cp_size, ws_elems_per_rank].
 
-Run: python -m pytest tests/comm/test_helix_alltoall.py -v -s
+Run: python -m pytest tests/comm/test_dcp_alltoall.py -v -s
 """
 
 import pytest
 import torch
 
 from flashinfer.comm import (
-    helix_a2a_alltoall,
-    helix_a2a_allocate_workspace,
-    helix_a2a_init_workspace,
-    helix_a2a_workspace_size,
+    dcp_a2a_alltoall,
+    dcp_a2a_allocate_workspace,
+    dcp_a2a_init_workspace,
+    dcp_a2a_workspace_size,
 )
 
 
@@ -81,7 +81,7 @@ def _run_single_gpu_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype):
     """
     torch.cuda.set_device(0)
 
-    workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+    workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank=0)
 
     all_partial_o = []
     all_softmax_stats = []
@@ -94,7 +94,7 @@ def _run_single_gpu_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype):
         all_softmax_stats.append(ss)
 
     for r in range(cp_size):
-        helix_a2a_init_workspace(workspace, r, cp_size)
+        dcp_a2a_init_workspace(workspace, r, cp_size)
 
     torch.cuda.synchronize()
 
@@ -104,7 +104,7 @@ def _run_single_gpu_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype):
 
     for r in range(cp_size):
         with torch.cuda.stream(streams[r]):
-            o, s = helix_a2a_alltoall(
+            o, s = dcp_a2a_alltoall(
                 all_partial_o[r],
                 all_softmax_stats[r],
                 workspace,
@@ -151,30 +151,30 @@ class TestWorkspaceLifecycle:
 
     def test_workspace_size_positive(self):
         for cp_size in [2, 4, 8]:
-            ws = helix_a2a_workspace_size(cp_size)
+            ws = dcp_a2a_workspace_size(cp_size)
             assert isinstance(ws, int)
             assert ws > 0, f"cp_size={cp_size}: workspace_size should be positive"
 
     def test_workspace_size_monotonic(self):
-        ws2 = helix_a2a_workspace_size(2)
-        ws4 = helix_a2a_workspace_size(4)
-        ws8 = helix_a2a_workspace_size(8)
+        ws2 = dcp_a2a_workspace_size(2)
+        ws4 = dcp_a2a_workspace_size(4)
+        ws8 = dcp_a2a_workspace_size(8)
         assert ws4 > ws2, "ws(4) should be > ws(2)"
         assert ws8 > ws4, "ws(8) should be > ws(4)"
 
     def test_allocate_returns_correct_shape_and_dtype(self):
         for cp_size in [2, 4]:
-            ws_bytes = helix_a2a_workspace_size(cp_size)
-            workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+            ws_bytes = dcp_a2a_workspace_size(cp_size)
+            workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank=0)
             assert workspace.dtype == torch.int64
             assert workspace.shape[0] == cp_size
             assert workspace.shape[1] == (ws_bytes + 7) // 8
 
     def test_init_workspace_does_not_hang(self):
         for cp_size in [2, 4]:
-            workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+            workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank=0)
             for r in range(cp_size):
-                helix_a2a_init_workspace(workspace, r, cp_size)
+                dcp_a2a_init_workspace(workspace, r, cp_size)
             torch.cuda.synchronize()
 
 
@@ -226,10 +226,10 @@ def test_repeated_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype, num_
     """Multiple alltoall calls on the same workspace without re-init (FIFO reuse)."""
     torch.cuda.set_device(0)
 
-    workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+    workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank=0)
 
     for r in range(cp_size):
-        helix_a2a_init_workspace(workspace, r, cp_size)
+        dcp_a2a_init_workspace(workspace, r, cp_size)
     torch.cuda.synchronize()
 
     for _round_idx in range(num_rounds):
@@ -250,7 +250,7 @@ def test_repeated_alltoall(cp_size, batch_size, head_dim, stats_dim, dtype, num_
 
         for r in range(cp_size):
             with torch.cuda.stream(streams[r]):
-                o, s = helix_a2a_alltoall(all_po[r], all_ss[r], workspace, r, cp_size)
+                o, s = dcp_a2a_alltoall(all_po[r], all_ss[r], workspace, r, cp_size)
                 recv_o[r] = _to_torch(o)
                 recv_s[r] = _to_torch(s)
 

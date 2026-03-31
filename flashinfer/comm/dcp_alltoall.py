@@ -1,31 +1,31 @@
 """
-Helix All-to-All Operations for DCP Attention Reduction
+DCP All-to-All Operations for DCP Attention Reduction
 
-Provides the Helix LL128 FIFO-based all-to-all kernel for context-parallel
+Provides the DCP LL128 FIFO-based all-to-all kernel for context-parallel
 attention reduction. Uses SM90+ features (TMA, mbarrier).
 
 Usage protocol::
 
     # 1. Query workspace size
-    ws_bytes = helix_a2a_workspace_size(cp_size)
+    ws_bytes = dcp_a2a_workspace_size(cp_size)
 
     # 2. Allocate workspace (MNNVL or plain device memory)
-    workspace = helix_a2a_allocate_workspace(cp_size, cp_rank, mapping=mapping)
+    workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank, mapping=mapping)
 
     # 3. Initialize workspace (synchronous — includes stream sync)
-    helix_a2a_init_workspace(workspace, cp_rank, cp_size)
+    dcp_a2a_init_workspace(workspace, cp_rank, cp_size)
 
     # 4. Cross-rank barrier (REQUIRED before first alltoall)
     dist.barrier(group)
 
     # 5. Run all-to-all
-    recv_o, recv_stats = helix_a2a_alltoall(
+    recv_o, recv_stats = dcp_a2a_alltoall(
         partial_o, softmax_stats, workspace, cp_rank, cp_size
     )
 
 .. important::
-    All ranks MUST complete ``helix_a2a_init_workspace`` and execute a
-    cross-rank barrier before ANY rank calls ``helix_a2a_alltoall``.
+    All ranks MUST complete ``dcp_a2a_init_workspace`` and execute a
+    cross-rank barrier before ANY rank calls ``dcp_a2a_alltoall``.
     Failure to do so causes a deadlock on MNNVL workspaces.
 
 Tensor specifications:
@@ -35,7 +35,7 @@ Tensor specifications:
 - ``softmax_stats``: ``[..., cp_size, S]`` — float32, ``S >= 2`` and even.
   Batch dims must match ``partial_o``.
 - ``workspace``: ``[cp_size, ws_elems_per_rank]`` — int64, from
-  :func:`helix_a2a_allocate_workspace`.
+  :func:`dcp_a2a_allocate_workspace`.
 """
 
 import functools
@@ -46,7 +46,7 @@ from typing import Optional
 import torch
 
 from ..api_logging import flashinfer_api
-from ..jit.comm import gen_helix_alltoall_module
+from ..jit.comm import gen_dcp_alltoall_module
 from ..utils import register_custom_op
 from .mapping import Mapping
 from .mnnvl import MnnvlConfig, MnnvlMemory
@@ -58,40 +58,40 @@ logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def get_helix_alltoall_module():
-    """Build (once) and return the Helix A2A JIT module with custom op wrappers."""
-    module = gen_helix_alltoall_module().build_and_load()
+def get_dcp_alltoall_module():
+    """Build (once) and return the DCP A2A JIT module with custom op wrappers."""
+    module = gen_dcp_alltoall_module().build_and_load()
 
     @register_custom_op(
-        "flashinfer::helix_a2a_init_workspace",
+        "flashinfer::dcp_a2a_init_workspace",
         mutates_args=("workspace",),
     )
-    def helix_a2a_init_workspace(
+    def dcp_a2a_init_workspace(
         workspace: torch.Tensor,
         cp_rank: int,
         cp_size: int,
     ):
-        module.initialize_helix_workspace(workspace, cp_rank, cp_size)
+        module.initialize_dcp_workspace(workspace, cp_rank, cp_size)
 
     @register_custom_op(
-        "flashinfer::helix_a2a_alltoall",
+        "flashinfer::dcp_a2a_alltoall",
         mutates_args=("workspace",),
     )
-    def helix_a2a_alltoall(
+    def dcp_a2a_alltoall(
         partial_o: torch.Tensor,
         softmax_stats: torch.Tensor,
         workspace: torch.Tensor,
         cp_rank: int,
         cp_size: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return module.alltoall_helix_native(
+        return module.alltoall_dcp_native(
             partial_o, softmax_stats, workspace, cp_rank, cp_size
         )
 
     return SimpleNamespace(
-        get_workspace_size_per_rank=module.get_helix_workspace_size_per_rank,
-        initialize_workspace=helix_a2a_init_workspace,
-        alltoall=helix_a2a_alltoall,
+        get_workspace_size_per_rank=module.get_dcp_workspace_size_per_rank,
+        initialize_workspace=dcp_a2a_init_workspace,
+        alltoall=dcp_a2a_alltoall,
     )
 
 
@@ -99,7 +99,7 @@ def get_helix_alltoall_module():
 
 
 @flashinfer_api
-def helix_a2a_workspace_size(cp_size: int) -> int:
+def dcp_a2a_workspace_size(cp_size: int) -> int:
     """Return the workspace size **in bytes** per rank for the given CP group size.
 
     Args:
@@ -110,14 +110,14 @@ def helix_a2a_workspace_size(cp_size: int) -> int:
 
     Example::
 
-        >>> helix_a2a_workspace_size(4)
+        >>> dcp_a2a_workspace_size(4)
         16778240
     """
-    return get_helix_alltoall_module().get_workspace_size_per_rank(cp_size)
+    return get_dcp_alltoall_module().get_workspace_size_per_rank(cp_size)
 
 
 @flashinfer_api
-def helix_a2a_allocate_workspace(
+def dcp_a2a_allocate_workspace(
     cp_size: int,
     cp_rank: int,
     *,
@@ -126,8 +126,8 @@ def helix_a2a_allocate_workspace(
 ) -> torch.Tensor:
     """Allocate a workspace tensor of shape ``[cp_size, ws_elems_per_rank]``.
 
-    After allocation, call :func:`helix_a2a_init_workspace` followed by a
-    cross-rank barrier before the first :func:`helix_a2a_alltoall` call.
+    After allocation, call :func:`dcp_a2a_init_workspace` followed by a
+    cross-rank barrier before the first :func:`dcp_a2a_alltoall` call.
 
     Two allocation modes:
 
@@ -151,7 +151,7 @@ def helix_a2a_allocate_workspace(
     Returns:
         ``torch.int64`` tensor of shape ``[cp_size, ws_elems_per_rank]``.
     """
-    ws_bytes = helix_a2a_workspace_size(cp_size)
+    ws_bytes = dcp_a2a_workspace_size(cp_size)
 
     if mapping is not None:
         MnnvlMemory.initialize()
@@ -162,7 +162,7 @@ def helix_a2a_allocate_workspace(
         workspace = mnnvl_mem.as_torch_strided_tensor(torch.int64)
         workspace._mnnvl_mem = mnnvl_mem  # prevent GC of MNNVL handle
         logger.info(
-            "Rank %d: Helix MNNVL workspace allocated — shape=%s, stride=%s",
+            "Rank %d: DCP MNNVL workspace allocated — shape=%s, stride=%s",
             cp_rank,
             list(workspace.shape),
             list(workspace.stride()),
@@ -174,7 +174,7 @@ def helix_a2a_allocate_workspace(
 
 
 @flashinfer_api
-def helix_a2a_init_workspace(
+def dcp_a2a_init_workspace(
     workspace: torch.Tensor,
     cp_rank: int,
     cp_size: int,
@@ -187,19 +187,19 @@ def helix_a2a_init_workspace(
 
     .. important::
         With MNNVL workspaces, **all ranks** must complete
-        ``helix_a2a_init_workspace`` and execute a cross-rank barrier
+        ``dcp_a2a_init_workspace`` and execute a cross-rank barrier
         (e.g. ``dist.barrier(group)``) before **any** rank calls
-        :func:`helix_a2a_alltoall`. Without the barrier, a rank may
+        :func:`dcp_a2a_alltoall`. Without the barrier, a rank may
         start writing to a peer's FIFO before that peer has finished
         initializing → deadlock.
 
     Args:
         workspace: ``[cp_size, ws_elems_per_rank]`` int64 tensor from
-            :func:`helix_a2a_allocate_workspace`.
+            :func:`dcp_a2a_allocate_workspace`.
         cp_rank: This rank's position in the CP group.
         cp_size: Context-parallel group size.
     """
-    get_helix_alltoall_module().initialize_workspace(workspace, cp_rank, cp_size)
+    get_dcp_alltoall_module().initialize_workspace(workspace, cp_rank, cp_size)
     # CRITICAL: The C++ op uses cudaMemsetAsync. Without this sync, a
     # subsequent cross-GPU alltoall can race with the unfinished memset
     # on MNNVL memory, causing a deadlock.
@@ -207,7 +207,7 @@ def helix_a2a_init_workspace(
 
 
 @flashinfer_api
-def helix_a2a_alltoall(
+def dcp_a2a_alltoall(
     partial_o: torch.Tensor,
     softmax_stats: torch.Tensor,
     workspace: torch.Tensor,
@@ -226,7 +226,7 @@ def helix_a2a_alltoall(
         softmax_stats: ``[..., cp_size, S]`` — float32, ``S >= 2`` and even.
             Batch dimensions must match ``partial_o``.
         workspace: ``[cp_size, ws_elems_per_rank]`` int64 tensor from
-            :func:`helix_a2a_allocate_workspace`, already initialized.
+            :func:`dcp_a2a_allocate_workspace`, already initialized.
         cp_rank: This rank's position in the CP group.
         cp_size: Context-parallel group size.
 
@@ -235,14 +235,14 @@ def helix_a2a_alltoall(
         dtypes as the inputs. Each output contains the gathered data from
         all peers for this rank.
     """
-    return get_helix_alltoall_module().alltoall(
+    return get_dcp_alltoall_module().alltoall(
         partial_o, softmax_stats, workspace, cp_rank, cp_size
     )
 
 
 __all__ = [
-    "helix_a2a_workspace_size",
-    "helix_a2a_allocate_workspace",
-    "helix_a2a_init_workspace",
-    "helix_a2a_alltoall",
+    "dcp_a2a_workspace_size",
+    "dcp_a2a_allocate_workspace",
+    "dcp_a2a_init_workspace",
+    "dcp_a2a_alltoall",
 ]

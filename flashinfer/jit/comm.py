@@ -109,14 +109,14 @@ def gen_moe_alltoall_module() -> JitSpec:
     )
 
 
-def gen_helix_alltoall_module() -> JitSpec:
+def gen_dcp_alltoall_module() -> JitSpec:
     nvcc_flags = current_compilation_context.get_nvcc_flags_list(
         supported_major_versions=[9, 10]
     )
     return gen_jit_spec(
-        "helix_alltoall",
+        "dcp_alltoall",
         [
-            jit_env.FLASHINFER_CSRC_DIR / "trtllm_helix_alltoall.cu",
+            jit_env.FLASHINFER_CSRC_DIR / "trtllm_dcp_alltoall.cu",
             jit_env.FLASHINFER_CSRC_DIR
             / "nv_internal"
             / "tensorrt_llm"
