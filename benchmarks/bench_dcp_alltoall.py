@@ -332,6 +332,7 @@ def main():
     # tensor during interpreter shutdown, it triggers a segfault in
     # TensorImpl::~TensorImpl. Calling os._exit() skips GC entirely.
     mpi_comm.Barrier()
+    MPI.Finalize()
     os._exit(0)
 
 
