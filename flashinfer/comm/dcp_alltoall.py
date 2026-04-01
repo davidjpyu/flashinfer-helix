@@ -7,25 +7,25 @@ attention reduction. Uses SM90+ features (TMA, mbarrier).
 Usage protocol::
 
     # 1. Query workspace size
-    ws_bytes = dcp_a2a_workspace_size(cp_size)
+    ws_bytes = decode_cp_a2a_workspace_size(cp_size)
 
     # 2. Allocate workspace (MNNVL or plain device memory)
-    workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank, mapping=mapping)
+    workspace = decode_cp_a2a_allocate_workspace(cp_size, cp_rank, mapping=mapping)
 
     # 3. Initialize workspace (synchronous — includes stream sync)
-    dcp_a2a_init_workspace(workspace, cp_rank, cp_size)
+    decode_cp_a2a_init_workspace(workspace, cp_rank, cp_size)
 
     # 4. Cross-rank barrier (REQUIRED before first alltoall)
     dist.barrier(group)
 
     # 5. Run all-to-all
-    recv_o, recv_stats = dcp_a2a_alltoall(
+    recv_o, recv_stats = decode_cp_a2a_alltoall(
         partial_o, softmax_stats, workspace, cp_rank, cp_size
     )
 
 .. important::
-    All ranks MUST complete ``dcp_a2a_init_workspace`` and execute a
-    cross-rank barrier before ANY rank calls ``dcp_a2a_alltoall``.
+    All ranks MUST complete ``decode_cp_a2a_init_workspace`` and execute a
+    cross-rank barrier before ANY rank calls ``decode_cp_a2a_alltoall``.
     Failure to do so causes a deadlock on MNNVL workspaces.
 
 Tensor specifications:
@@ -35,7 +35,7 @@ Tensor specifications:
 - ``softmax_stats``: ``[..., cp_size, S]`` — float32, ``S >= 2`` and even.
   Batch dims must match ``partial_o``.
 - ``workspace``: ``[cp_size, ws_elems_per_rank]`` — int64, from
-  :func:`dcp_a2a_allocate_workspace`.
+  :func:`decode_cp_a2a_allocate_workspace`.
 """
 
 import functools
@@ -63,10 +63,10 @@ def get_dcp_alltoall_module():
     module = gen_dcp_alltoall_module().build_and_load()
 
     @register_custom_op(
-        "flashinfer::dcp_a2a_init_workspace",
+        "flashinfer::decode_cp_a2a_init_workspace",
         mutates_args=("workspace",),
     )
-    def dcp_a2a_init_workspace(
+    def decode_cp_a2a_init_workspace(
         workspace: torch.Tensor,
         cp_rank: int,
         cp_size: int,
@@ -74,10 +74,10 @@ def get_dcp_alltoall_module():
         module.initialize_dcp_workspace(workspace, cp_rank, cp_size)
 
     @register_custom_op(
-        "flashinfer::dcp_a2a_alltoall",
+        "flashinfer::decode_cp_a2a_alltoall",
         mutates_args=("workspace",),
     )
-    def dcp_a2a_alltoall(
+    def decode_cp_a2a_alltoall(
         partial_o: torch.Tensor,
         softmax_stats: torch.Tensor,
         workspace: torch.Tensor,
@@ -90,8 +90,8 @@ def get_dcp_alltoall_module():
 
     return SimpleNamespace(
         get_workspace_size_per_rank=module.get_dcp_workspace_size_per_rank,
-        initialize_workspace=dcp_a2a_init_workspace,
-        alltoall=dcp_a2a_alltoall,
+        initialize_workspace=decode_cp_a2a_init_workspace,
+        alltoall=decode_cp_a2a_alltoall,
     )
 
 
@@ -99,7 +99,7 @@ def get_dcp_alltoall_module():
 
 
 @flashinfer_api
-def dcp_a2a_workspace_size(cp_size: int) -> int:
+def decode_cp_a2a_workspace_size(cp_size: int) -> int:
     """Return the workspace size **in bytes** per rank for the given CP group size.
 
     Args:
@@ -110,14 +110,14 @@ def dcp_a2a_workspace_size(cp_size: int) -> int:
 
     Example::
 
-        >>> dcp_a2a_workspace_size(4)
+        >>> decode_cp_a2a_workspace_size(4)
         16778240
     """
     return get_dcp_alltoall_module().get_workspace_size_per_rank(cp_size)
 
 
 @flashinfer_api
-def dcp_a2a_allocate_workspace(
+def decode_cp_a2a_allocate_workspace(
     cp_size: int,
     cp_rank: int,
     *,
@@ -126,8 +126,8 @@ def dcp_a2a_allocate_workspace(
 ) -> torch.Tensor:
     """Allocate a workspace tensor of shape ``[cp_size, ws_elems_per_rank]``.
 
-    After allocation, call :func:`dcp_a2a_init_workspace` followed by a
-    cross-rank barrier before the first :func:`dcp_a2a_alltoall` call.
+    After allocation, call :func:`decode_cp_a2a_init_workspace` followed by a
+    cross-rank barrier before the first :func:`decode_cp_a2a_alltoall` call.
 
     Two allocation modes:
 
@@ -151,7 +151,7 @@ def dcp_a2a_allocate_workspace(
     Returns:
         ``torch.int64`` tensor of shape ``[cp_size, ws_elems_per_rank]``.
     """
-    ws_bytes = dcp_a2a_workspace_size(cp_size)
+    ws_bytes = decode_cp_a2a_workspace_size(cp_size)
 
     if mapping is not None:
         MnnvlMemory.initialize()
@@ -174,7 +174,7 @@ def dcp_a2a_allocate_workspace(
 
 
 @flashinfer_api
-def dcp_a2a_init_workspace(
+def decode_cp_a2a_init_workspace(
     workspace: torch.Tensor,
     cp_rank: int,
     cp_size: int,
@@ -187,15 +187,15 @@ def dcp_a2a_init_workspace(
 
     .. important::
         With MNNVL workspaces, **all ranks** must complete
-        ``dcp_a2a_init_workspace`` and execute a cross-rank barrier
+        ``decode_cp_a2a_init_workspace`` and execute a cross-rank barrier
         (e.g. ``dist.barrier(group)``) before **any** rank calls
-        :func:`dcp_a2a_alltoall`. Without the barrier, a rank may
+        :func:`decode_cp_a2a_alltoall`. Without the barrier, a rank may
         start writing to a peer's FIFO before that peer has finished
         initializing → deadlock.
 
     Args:
         workspace: ``[cp_size, ws_elems_per_rank]`` int64 tensor from
-            :func:`dcp_a2a_allocate_workspace`.
+            :func:`decode_cp_a2a_allocate_workspace`.
         cp_rank: This rank's position in the CP group.
         cp_size: Context-parallel group size.
     """
@@ -207,7 +207,7 @@ def dcp_a2a_init_workspace(
 
 
 @flashinfer_api
-def dcp_a2a_alltoall(
+def decode_cp_a2a_alltoall(
     partial_o: torch.Tensor,
     softmax_stats: torch.Tensor,
     workspace: torch.Tensor,
@@ -226,7 +226,7 @@ def dcp_a2a_alltoall(
         softmax_stats: ``[..., cp_size, S]`` — float32, ``S >= 2`` and even.
             Batch dimensions must match ``partial_o``.
         workspace: ``[cp_size, ws_elems_per_rank]`` int64 tensor from
-            :func:`dcp_a2a_allocate_workspace`, already initialized.
+            :func:`decode_cp_a2a_allocate_workspace`, already initialized.
         cp_rank: This rank's position in the CP group.
         cp_size: Context-parallel group size.
 
@@ -241,8 +241,8 @@ def dcp_a2a_alltoall(
 
 
 __all__ = [
-    "dcp_a2a_workspace_size",
-    "dcp_a2a_allocate_workspace",
-    "dcp_a2a_init_workspace",
-    "dcp_a2a_alltoall",
+    "decode_cp_a2a_workspace_size",
+    "decode_cp_a2a_allocate_workspace",
+    "decode_cp_a2a_init_workspace",
+    "decode_cp_a2a_alltoall",
 ]

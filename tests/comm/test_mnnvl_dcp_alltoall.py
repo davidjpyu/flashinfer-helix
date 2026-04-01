@@ -34,10 +34,10 @@ import pytest
 import torch
 
 from flashinfer.comm import (
-    dcp_a2a_alltoall,
-    dcp_a2a_allocate_workspace,
-    dcp_a2a_init_workspace,
-    dcp_a2a_workspace_size,
+    decode_cp_a2a_alltoall,
+    decode_cp_a2a_allocate_workspace,
+    decode_cp_a2a_init_workspace,
+    decode_cp_a2a_workspace_size,
 )
 from flashinfer.comm.mapping import Mapping
 from flashinfer.comm.mnnvl import MnnvlMemory, MpiComm
@@ -122,7 +122,7 @@ def _allocate_mnnvl_workspace_once():
         pp_size=1,
     )
 
-    ws_bytes = dcp_a2a_workspace_size(_cp_size)
+    ws_bytes = decode_cp_a2a_workspace_size(_cp_size)
     mnnvl_mem = MnnvlMemory(mapping, ws_bytes)
     workspace = mnnvl_mem.as_torch_strided_tensor(torch.int64)
     workspace._mnnvl_mem = mnnvl_mem  # prevent GC
@@ -149,7 +149,7 @@ class TestMnnvlDcpWorkspace:
             f"Expected workspace.shape[0] == {_cp_size}, got {_mnnvl_workspace.shape[0]}"
         )
 
-        ws_bytes = dcp_a2a_workspace_size(_cp_size)
+        ws_bytes = decode_cp_a2a_workspace_size(_cp_size)
         expected_elems = (ws_bytes + 7) // 8  # int64 elements
         assert _mnnvl_workspace.shape[1] == expected_elems
         assert _mnnvl_workspace.dtype == torch.int64
@@ -192,7 +192,7 @@ class TestMnnvlDcpAlltoall:
         """
         workspace = _mnnvl_workspace
 
-        dcp_a2a_init_workspace(workspace, _rank, _cp_size)
+        decode_cp_a2a_init_workspace(workspace, _rank, _cp_size)
         torch.cuda.synchronize()
         _comm.Barrier()
 
@@ -206,7 +206,7 @@ class TestMnnvlDcpAlltoall:
         )
 
         # Run alltoall
-        recv_o, recv_s = dcp_a2a_alltoall(
+        recv_o, recv_s = decode_cp_a2a_alltoall(
             partial_o, softmax_stats, workspace, _rank, _cp_size
         )
         recv_o = _to_torch(recv_o)
@@ -256,7 +256,7 @@ class TestMnnvlDcpAlltoall:
         """Multiple alltoall calls on the same workspace (FIFO reuse)."""
         workspace = _mnnvl_workspace
 
-        dcp_a2a_init_workspace(workspace, _rank, _cp_size)
+        decode_cp_a2a_init_workspace(workspace, _rank, _cp_size)
         torch.cuda.synchronize()
         _comm.Barrier()
 
@@ -269,7 +269,7 @@ class TestMnnvlDcpAlltoall:
                 16, _cp_size, 2, dtype=torch.float32, device="cuda"
             )
 
-            recv_o, recv_s = dcp_a2a_alltoall(
+            recv_o, recv_s = decode_cp_a2a_alltoall(
                 partial_o, softmax_stats, workspace, _rank, _cp_size
             )
             recv_o = _to_torch(recv_o)
@@ -300,7 +300,7 @@ class TestMnnvlDcpAlltoall:
 class TestMnnvlDcpDeviceMemoryFallback:
     """Test that non-MNNVL (device memory) path also works multi-GPU.
 
-    Uses dcp_a2a_allocate_workspace without MNNVL mapping. This only
+    Uses decode_cp_a2a_allocate_workspace without MNNVL mapping. This only
     works when all ranks are on the same GPU (single-GPU simulation)
     or with IPC. Included here to verify the workspace API contract.
     """
@@ -312,10 +312,10 @@ class TestMnnvlDcpDeviceMemoryFallback:
 
     def test_device_workspace_shape(self):
         """Device workspace has correct shape [cp_size, ws_elems]."""
-        workspace = dcp_a2a_allocate_workspace(_cp_size, cp_rank=_rank)
+        workspace = decode_cp_a2a_allocate_workspace(_cp_size, cp_rank=_rank)
         assert workspace.shape[0] == _cp_size
 
-        ws_bytes = dcp_a2a_workspace_size(_cp_size)
+        ws_bytes = decode_cp_a2a_workspace_size(_cp_size)
         expected_elems = (ws_bytes + 7) // 8
         assert workspace.shape[1] == expected_elems
         assert workspace.dtype == torch.int64

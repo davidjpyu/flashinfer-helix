@@ -17,7 +17,7 @@
 DCP All-to-All Microbenchmark: Native LL128 FIFO vs NCCL Baseline
 
 Measures single kernel-level latency for the DCP A2A communication op:
-  - Native: dcp_a2a_alltoall (fused LL128 FIFO kernel via MNNVL)
+  - Native: decode_cp_a2a_alltoall (fused LL128 FIFO kernel via MNNVL)
   - NCCL baseline: 2x torch.distributed.all_to_all_single (partial_o + softmax_stats)
 
 This is NOT an end-to-end pipeline benchmark. It measures raw communication
@@ -56,9 +56,9 @@ import torch.distributed as dist
 from mpi4py import MPI
 
 from flashinfer.comm import (
-    dcp_a2a_alltoall,
-    dcp_a2a_init_workspace,
-    dcp_a2a_workspace_size,
+    decode_cp_a2a_alltoall,
+    decode_cp_a2a_init_workspace,
+    decode_cp_a2a_workspace_size,
 )
 from flashinfer.comm.mapping import Mapping
 from flashinfer.comm.mnnvl import MnnvlMemory, MpiComm
@@ -107,7 +107,7 @@ def allocate_mnnvl_workspace(rank, cp_size, mpi_comm):
         pp_size=1,
     )
 
-    ws_bytes = dcp_a2a_workspace_size(cp_size)
+    ws_bytes = decode_cp_a2a_workspace_size(cp_size)
     mnnvl_mem = MnnvlMemory(mapping, ws_bytes)
     workspace = mnnvl_mem.as_torch_strided_tensor(torch.int64)
     workspace._mnnvl_mem = mnnvl_mem  # prevent GC
@@ -126,9 +126,9 @@ def bench_native(
     iters,
     mpi_comm,
 ):
-    """Benchmark native dcp_a2a_alltoall. Returns list of per-iteration times in ms."""
+    """Benchmark native decode_cp_a2a_alltoall. Returns list of per-iteration times in ms."""
     # Init workspace once — FIFO supports reuse across iterations
-    dcp_a2a_init_workspace(workspace, rank, cp_size)
+    decode_cp_a2a_init_workspace(workspace, rank, cp_size)
     torch.cuda.synchronize()
     mpi_comm.Barrier()
 
@@ -139,7 +139,7 @@ def bench_native(
 
     # Warmup
     for _ in range(warmup):
-        recv_o, recv_s = dcp_a2a_alltoall(
+        recv_o, recv_s = decode_cp_a2a_alltoall(
             partial_o, softmax_stats, workspace, rank, cp_size
         )
         torch.cuda.synchronize()
@@ -155,7 +155,7 @@ def bench_native(
         end = torch.cuda.Event(enable_timing=True)
 
         start.record()
-        recv_o, recv_s = dcp_a2a_alltoall(
+        recv_o, recv_s = decode_cp_a2a_alltoall(
             partial_o, softmax_stats, workspace, rank, cp_size
         )
         end.record()
@@ -309,7 +309,7 @@ def main():
                 )
             if native_stats:
                 print(
-                    f"    Native (dcp_a2a_alltoall):    "
+                    f"    Native (decode_cp_a2a_alltoall):    "
                     f"p50={native_stats['p50']:.3f}ms  "
                     f"p95={native_stats['p95']:.3f}ms  "
                     f"mean={native_stats['mean']:.3f}ms"
