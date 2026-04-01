@@ -327,6 +327,13 @@ def main():
     if not args.skip_nccl and dist.is_initialized():
         dist.destroy_process_group()
 
+    # Prevent segfault at exit: MnnvlMemory uses a bump allocator that
+    # doesn't support individual frees. If Python GC destroys the workspace
+    # tensor during interpreter shutdown, it triggers a segfault in
+    # TensorImpl::~TensorImpl. Calling os._exit() skips GC entirely.
+    mpi_comm.Barrier()
+    os._exit(0)
+
 
 if __name__ == "__main__":
     main()
