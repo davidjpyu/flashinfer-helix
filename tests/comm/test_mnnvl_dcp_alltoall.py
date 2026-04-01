@@ -28,12 +28,10 @@ Run:
 """
 
 import socket
-import traceback
 
 import pynvml
 import pytest
 import torch
-from mpi4py import MPI
 
 from flashinfer.comm import (
     dcp_a2a_alltoall,
@@ -74,31 +72,6 @@ pytestmark = [
 ]
 
 
-# ─── MPI helpers ─────────────────────────────────────────────────────────
-
-
-class MPIExit(Exception):
-    pass
-
-
-def check_any_rank_failed():
-    comm = MPI.COMM_WORLD
-    if any(comm.allgather(False)):
-        raise MPIExit("Another rank failed")
-
-
-def safe_run(func, *args, **kwargs):
-    comm = MPI.COMM_WORLD
-    try:
-        func(*args, **kwargs)
-    except MPIExit:
-        raise
-    except Exception:
-        traceback.print_exc()
-        comm.allgather(True)
-        raise
-
-
 # ─── Helper ──────────────────────────────────────────────────────────────
 
 
@@ -125,29 +98,38 @@ def _setup_rank():
     return rank, world_size, comm
 
 
-def _allocate_mnnvl_workspace(rank, cp_size, comm):
-    """Allocate MNNVL workspace for DCP A2A, grouping CP peers.
+# ─── Module-level MNNVL workspace (allocated once, reused across tests) ──
 
-    Sets MnnvlMemory.comm directly to avoid set_comm_from_config's
-    MoE-oriented split (which groups TP peers, not CP peers).
+_rank, _cp_size, _comm = _setup_rank()
+
+
+def _allocate_mnnvl_workspace_once():
+    """Allocate MNNVL workspace once at module level.
+
+    MnnvlMemory uses a global bump allocator that doesn't support
+    individual frees. Allocating per-test causes segfaults when
+    workspace tensors from previous tests get GC'd. So we allocate
+    once and reuse.
     """
     MnnvlMemory.initialize()
-    MnnvlMemory.comm = comm
+    MnnvlMemory.comm = _comm
 
     mapping = Mapping(
-        world_size=cp_size,
-        rank=rank,
-        cp_size=cp_size,
+        world_size=_cp_size,
+        rank=_rank,
+        cp_size=_cp_size,
         tp_size=1,
         pp_size=1,
     )
 
-    ws_bytes = dcp_a2a_workspace_size(cp_size)
+    ws_bytes = dcp_a2a_workspace_size(_cp_size)
     mnnvl_mem = MnnvlMemory(mapping, ws_bytes)
     workspace = mnnvl_mem.as_torch_strided_tensor(torch.int64)
     workspace._mnnvl_mem = mnnvl_mem  # prevent GC
-
     return workspace
+
+
+_mnnvl_workspace = _allocate_mnnvl_workspace_once()
 
 
 # ─── Tests ───────────────────────────────────────────────────────────────
@@ -158,44 +140,39 @@ class TestMnnvlDcpWorkspace:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.rank, self.cp_size, self.comm = _setup_rank()
-        torch.manual_seed(0xA2A + self.rank)
+        torch.manual_seed(0xA2A + _rank)
         yield
 
     def test_workspace_shape(self):
         """MNNVL workspace must have shape [cp_size, ws_elems_per_rank]."""
-        workspace = _allocate_mnnvl_workspace(self.rank, self.cp_size, self.comm)
-        assert workspace.shape[0] == self.cp_size, (
-            f"Expected workspace.shape[0] == {self.cp_size}, got {workspace.shape[0]}"
+        assert _mnnvl_workspace.shape[0] == _cp_size, (
+            f"Expected workspace.shape[0] == {_cp_size}, got {_mnnvl_workspace.shape[0]}"
         )
 
-        ws_bytes = dcp_a2a_workspace_size(self.cp_size)
+        ws_bytes = dcp_a2a_workspace_size(_cp_size)
         expected_elems = (ws_bytes + 7) // 8  # int64 elements
-        assert workspace.shape[1] == expected_elems
-        assert workspace.dtype == torch.int64
+        assert _mnnvl_workspace.shape[1] == expected_elems
+        assert _mnnvl_workspace.dtype == torch.int64
 
-        self.comm.Barrier()
+        _comm.Barrier()
 
     def test_workspace_cross_rank_visible(self):
         """Each rank can write to its own segment and peers can read it."""
-        workspace = _allocate_mnnvl_workspace(self.rank, self.cp_size, self.comm)
-
         # Each rank writes a unique pattern to its own workspace segment
-        pattern = torch.full_like(workspace[self.rank], fill_value=self.rank + 1)
-        workspace[self.rank].copy_(pattern)
+        pattern = torch.full_like(_mnnvl_workspace[_rank], fill_value=_rank + 1)
+        _mnnvl_workspace[_rank].copy_(pattern)
         torch.cuda.synchronize()
-        self.comm.Barrier()
+        _comm.Barrier()
 
         # Each rank reads all segments and verifies the pattern
-        for peer in range(self.cp_size):
+        for peer in range(_cp_size):
             expected = peer + 1
-            actual = workspace[peer][0].item()
+            actual = _mnnvl_workspace[peer][0].item()
             assert actual == expected, (
-                f"Rank {self.rank}: workspace[{peer}][0] = {actual}, "
-                f"expected {expected}"
+                f"Rank {_rank}: workspace[{peer}][0] = {actual}, expected {expected}"
             )
 
-        self.comm.Barrier()
+        _comm.Barrier()
 
 
 class TestMnnvlDcpAlltoall:
@@ -203,7 +180,6 @@ class TestMnnvlDcpAlltoall:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.rank, self.cp_size, self.comm = _setup_rank()
         torch.manual_seed(0xA2A)
         yield
 
@@ -214,41 +190,38 @@ class TestMnnvlDcpAlltoall:
           recv_o[rank][.., peer, :] == send_o[peer][.., rank, :]
           recv_s[rank][.., peer, :] == send_s[peer][.., rank, :]
         """
-        rank = self.rank
-        cp_size = self.cp_size
+        workspace = _mnnvl_workspace
 
-        workspace = _allocate_mnnvl_workspace(rank, cp_size, self.comm)
-
-        dcp_a2a_init_workspace(workspace, rank, cp_size)
+        dcp_a2a_init_workspace(workspace, _rank, _cp_size)
         torch.cuda.synchronize()
-        self.comm.Barrier()
+        _comm.Barrier()
 
         # Generate input with deterministic seed per rank
-        torch.manual_seed(0xA2A + rank)
+        torch.manual_seed(0xA2A + _rank)
         partial_o = torch.randn(
-            batch_size, cp_size, head_dim, dtype=dtype, device="cuda"
+            batch_size, _cp_size, head_dim, dtype=dtype, device="cuda"
         )
         softmax_stats = torch.randn(
-            batch_size, cp_size, stats_dim, dtype=torch.float32, device="cuda"
+            batch_size, _cp_size, stats_dim, dtype=torch.float32, device="cuda"
         )
 
         # Run alltoall
         recv_o, recv_s = dcp_a2a_alltoall(
-            partial_o, softmax_stats, workspace, rank, cp_size
+            partial_o, softmax_stats, workspace, _rank, _cp_size
         )
         recv_o = _to_torch(recv_o)
         recv_s = _to_torch(recv_s)
         torch.cuda.synchronize()
-        self.comm.Barrier()
+        _comm.Barrier()
 
         # Gather all inputs to all ranks for verification
-        all_partial_o = self.comm.allgather(partial_o.cpu())
-        all_softmax_stats = self.comm.allgather(softmax_stats.cpu())
+        all_partial_o = _comm.allgather(partial_o.cpu())
+        all_softmax_stats = _comm.allgather(softmax_stats.cpu())
 
         # Verify transpose property
-        for peer in range(cp_size):
-            expected_o = all_partial_o[peer][..., rank, :].cuda()
-            expected_s = all_softmax_stats[peer][..., rank, :].cuda()
+        for peer in range(_cp_size):
+            expected_o = all_partial_o[peer][..., _rank, :].cuda()
+            expected_s = all_softmax_stats[peer][..., _rank, :].cuda()
 
             torch.testing.assert_close(
                 recv_o[..., peer, :],
@@ -263,7 +236,7 @@ class TestMnnvlDcpAlltoall:
                 rtol=0,
             )
 
-        self.comm.Barrier()
+        _comm.Barrier()
 
     @pytest.mark.parametrize(
         "batch_size,head_dim,stats_dim,dtype",
@@ -281,49 +254,47 @@ class TestMnnvlDcpAlltoall:
 
     def test_repeated_alltoall(self):
         """Multiple alltoall calls on the same workspace (FIFO reuse)."""
-        rank = self.rank
-        cp_size = self.cp_size
+        workspace = _mnnvl_workspace
 
-        workspace = _allocate_mnnvl_workspace(rank, cp_size, self.comm)
-        dcp_a2a_init_workspace(workspace, rank, cp_size)
+        dcp_a2a_init_workspace(workspace, _rank, _cp_size)
         torch.cuda.synchronize()
-        self.comm.Barrier()
+        _comm.Barrier()
 
         for round_idx in range(3):
-            torch.manual_seed(0xA2A + rank * 100 + round_idx)
+            torch.manual_seed(0xA2A + _rank * 100 + round_idx)
             partial_o = torch.randn(
-                16, cp_size, 128, dtype=torch.bfloat16, device="cuda"
+                16, _cp_size, 128, dtype=torch.bfloat16, device="cuda"
             )
             softmax_stats = torch.randn(
-                16, cp_size, 2, dtype=torch.float32, device="cuda"
+                16, _cp_size, 2, dtype=torch.float32, device="cuda"
             )
 
             recv_o, recv_s = dcp_a2a_alltoall(
-                partial_o, softmax_stats, workspace, rank, cp_size
+                partial_o, softmax_stats, workspace, _rank, _cp_size
             )
             recv_o = _to_torch(recv_o)
             recv_s = _to_torch(recv_s)
             torch.cuda.synchronize()
-            self.comm.Barrier()
+            _comm.Barrier()
 
-            all_partial_o = self.comm.allgather(partial_o.cpu())
-            all_softmax_stats = self.comm.allgather(softmax_stats.cpu())
+            all_partial_o = _comm.allgather(partial_o.cpu())
+            all_softmax_stats = _comm.allgather(softmax_stats.cpu())
 
-            for peer in range(cp_size):
+            for peer in range(_cp_size):
                 torch.testing.assert_close(
                     recv_o[..., peer, :],
-                    all_partial_o[peer][..., rank, :].cuda(),
+                    all_partial_o[peer][..., _rank, :].cuda(),
                     atol=0,
                     rtol=0,
                 )
                 torch.testing.assert_close(
                     recv_s[..., peer, :],
-                    all_softmax_stats[peer][..., rank, :].cuda(),
+                    all_softmax_stats[peer][..., _rank, :].cuda(),
                     atol=0,
                     rtol=0,
                 )
 
-            self.comm.Barrier()
+            _comm.Barrier()
 
 
 class TestMnnvlDcpDeviceMemoryFallback:
@@ -336,21 +307,20 @@ class TestMnnvlDcpDeviceMemoryFallback:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.rank, self.cp_size, self.comm = _setup_rank()
         torch.manual_seed(0xA2A)
         yield
 
     def test_device_workspace_shape(self):
         """Device workspace has correct shape [cp_size, ws_elems]."""
-        workspace = dcp_a2a_allocate_workspace(self.cp_size, cp_rank=self.rank)
-        assert workspace.shape[0] == self.cp_size
+        workspace = dcp_a2a_allocate_workspace(_cp_size, cp_rank=_rank)
+        assert workspace.shape[0] == _cp_size
 
-        ws_bytes = dcp_a2a_workspace_size(self.cp_size)
+        ws_bytes = dcp_a2a_workspace_size(_cp_size)
         expected_elems = (ws_bytes + 7) // 8
         assert workspace.shape[1] == expected_elems
         assert workspace.dtype == torch.int64
 
-        self.comm.Barrier()
+        _comm.Barrier()
 
 
 if __name__ == "__main__":
