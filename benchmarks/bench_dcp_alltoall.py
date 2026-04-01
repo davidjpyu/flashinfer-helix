@@ -127,7 +127,7 @@ def bench_native(
     mpi_comm,
 ):
     """Benchmark native dcp_a2a_alltoall. Returns list of per-iteration times in ms."""
-    # Re-init workspace FIFOs
+    # Init workspace once — FIFO supports reuse across iterations
     dcp_a2a_init_workspace(workspace, rank, cp_size)
     torch.cuda.synchronize()
     mpi_comm.Barrier()
@@ -139,9 +139,6 @@ def bench_native(
 
     # Warmup
     for _ in range(warmup):
-        dcp_a2a_init_workspace(workspace, rank, cp_size)
-        torch.cuda.synchronize()
-        mpi_comm.Barrier()
         recv_o, recv_s = dcp_a2a_alltoall(
             partial_o, softmax_stats, workspace, rank, cp_size
         )
@@ -151,7 +148,6 @@ def bench_native(
     # Timed iterations
     times = []
     for _ in range(iters):
-        dcp_a2a_init_workspace(workspace, rank, cp_size)
         torch.cuda.synchronize()
         mpi_comm.Barrier()
 
