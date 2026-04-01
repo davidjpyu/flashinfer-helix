@@ -30,6 +30,7 @@ Run:
 import socket
 import traceback
 
+import pynvml
 import pytest
 import torch
 from mpi4py import MPI
@@ -44,6 +45,8 @@ from flashinfer.comm.mapping import Mapping
 from flashinfer.comm.mnnvl import MnnvlMemory, MpiComm
 
 from .conftest import mnnvl_available
+
+pynvml.nvmlInit()
 
 
 # ─── SM90+ gate ──────────────────────────────────────────────────────────
